@@ -4,3 +4,13 @@
 *.ptx
 *.cubin
 *.fatbin
+build
+data
+extra_doc
+libs
+out
+.vs
+
+CMakeLists.txt
+PlaneSweepInstall.pdf
+

@@ -6,6 +6,7 @@
 
 __global__ void dev_test_vecAdd(int* A, int* B, int* C, int N)
 {
+	// kernel de test
 	int i = blockIdx.x * blockDim.x + threadIdx.x;
 	if (i >= N) return;
 
