@@ -9,6 +9,7 @@ data
 extra_doc
 libs
 out
+opencv
 .vs
 
 CMakeLists.txt
