@@ -13,5 +13,6 @@ opencv
 .vs
 
 CMakeLists.txt
+settings.json
 
 

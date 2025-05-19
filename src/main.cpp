@@ -2,20 +2,28 @@
 #include "cam_params.hpp"
 #include "constants.hpp"
 #include "graph.h"
+#include "utils.hpp"
 
 #include <cstdio>
 #include <vector>
+#include <fstream>
+#include <iostream>
+#include <string>
+
+
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/opencv.hpp>
 
-#include <string>
 
 #define SHRT_MAX 32767
 
 std::vector<cv::Mat> sweeping_plane_gpu(const cam& ref, const std::vector<cam>& cam_vector, int window = 5);
+void average_time_sweeping_plane_gpu(const cam& ref, const std::vector<cam>& cam_vector, int window, int iterations);
+
+
 
 
 std::vector<cam> read_cams(std::string const &folder)
@@ -324,28 +332,46 @@ int main()
 	// Read cams
 	std::vector<cam> cam_vector = read_cams("data");
 	clock_t start, end;
+
+	// benchmark GPU version
+	//average_time_sweeping_plane_gpu(cam_vector.at(0), cam_vector, 5, 10);
+
 	start = clock();
 	// Sweeping algorithm for camera 0
-	//std::vector<cv::Mat> cost_cube = sweeping_plane(cam_vector.at(0), cam_vector, 5);
+	//std::vector<cv::Mat> cpu_cost_cube = sweeping_plane(cam_vector.at(0), cam_vector, 5);
 	std::vector<cv::Mat> cost_cube = sweeping_plane_gpu(cam_vector.at(0), cam_vector, 5);
 	end = clock();
+	std::cout << "Time taken for GPU version: " << (double)(end - start) / CLOCKS_PER_SEC << " seconds" << std::endl;
 
-	std::cout << "Time taken for CPU version: " << (double)(end - start) / CLOCKS_PER_SEC << " seconds" << std::endl;
+	auto cpu_cost_cube = load_cost_cube("./data/cost_cube_CPU.bin");
+	
+	// Compare cost cubes
+	if (compare_cost_cubes(cpu_cost_cube, cost_cube))
+	{
+		std::cout << "Cost cubes are equal" << std::endl;
+	}
+	else
+	{
+		std::cout << "Cost cubes are NOT equal" << std::endl;
+	}
+	
+
+	
 
 	// Use graph cut to generate depth map 
 	// Cleaner results, long compute time
-	//cv::Mat depth = depth_estimation_by_graph_cut_sWeight(cost_cube);
+	cv::Mat depth = depth_estimation_by_graph_cut_sWeight(cost_cube);
 
-	// Find min cost and generate depth map
-	// Faster result, low quality
-	cv::Mat depth = find_min(cost_cube);
+	// // Find min cost and generate depth map
+	// // Faster result, low quality
+	// //cv::Mat depth = find_min(cost_cube);
 
 
 	cv::namedWindow("Depth", cv::WINDOW_NORMAL);
-	/*cv::imshow("Depth", depth);
+	cv::imshow("Depth", depth);
 	cv::waitKey(0);
 
-	cv::imwrite("./depth_map.png", depth);*/
+	cv::imwrite("./depth_map.png", depth);
 
 	//printf("%f", depth.at<uchar>(0, 0));
 
@@ -403,9 +429,25 @@ std::vector<cv::Mat> sweeping_plane_gpu(const cam& ref, const std::vector<cam>& 
 
 	// Convert cost volume to cv::Mat
 	for (int z = 0; z < ZPlanes; ++z) {
-		cost_cube[z] = cv::Mat(H, W, CV_32FC1);
+		cost_cube[z] = cv::Mat(H, W, CV_32FC1, 255.f);
 		std::memcpy(cost_cube[z].data, h_cost_vol.data() + z * W * H, W * H * sizeof(float));
 	}
 
 	return cost_cube;
+}
+
+
+void average_time_sweeping_plane_gpu(const cam& ref, const std::vector<cam>& cam_vector, int window, int iterations = 10)
+{
+	double total_time = 0.0;
+	for (int i = 0; i < iterations; i++)
+	{
+		clock_t start = clock();
+		sweeping_plane_gpu(ref, cam_vector, window);
+		clock_t end = clock();
+		double iter_time = (double)(end - start) / CLOCKS_PER_SEC;
+		std::cout << "Iteration " << i + 1 << " time: " << iter_time << " seconds" << std::endl;
+		total_time += iter_time;
+	}
+	std::cout << "Average time for GPU version: " << (total_time / iterations) << " seconds" << std::endl;
 }
