@@ -1,6 +1,28 @@
 #pragma once
 #include <cuda_runtime.h>
 #include <cuda.h>
+#include <vector>
+
+
+// minimal GPU-side struct for camera intrinsics/extrinsics:
+struct CamParams {
+    float K[9], R[9], t[3];
+    float K_inv[9], R_inv[9], t_inv[3];
+};
+
+__global__ void sweep_kernel_double_Naive(
+    float* cost_vol, const uint8_t* ref_img, const uint8_t* tgt_img,
+    int W, int H, CamParams ref, CamParams cam, int window);
+
+void sweeping_plane_gpu_device(
+    const uint8_t* ref_Y, const CamParams& ref_params,
+    const std::vector<const uint8_t*>& cam_Ys,
+    const std::vector<CamParams>& cam_params,
+    float* h_cost_vol,
+    int W, int H, int window
+);
+
+
 
 // This is the public interface of our cuda function, called directly in main.cpp
 void wrap_test_vectorAdd();

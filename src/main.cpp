@@ -15,6 +15,9 @@
 
 #define SHRT_MAX 32767
 
+std::vector<cv::Mat> sweeping_plane_gpu(const cam& ref, const std::vector<cam>& cam_vector, int window = 5);
+
+
 std::vector<cam> read_cams(std::string const &folder)
 {
 	// Init parameters
@@ -276,33 +279,133 @@ cv::Mat depth_estimation_by_graph_cut_sWeight(std::vector<cv::Mat> const& cost_c
 	return depth;
 }
 
+void printDeviceInfo()
+{
+	int nDevices;
+
+
+
+	cudaGetDeviceCount(&nDevices);
+	printf("Number of devices : %d \n", nDevices);
+
+	for (int i = 0; i < nDevices; i++) {
+		cudaDeviceProp prop;
+		cudaGetDeviceProperties(&prop, i);
+		printf("Device Number: %d \n", i);
+		printf(" Device Name : %s\n", prop.name);
+		printf(" Compute capability: %d.%D\n", prop.major, prop.minor);
+		printf(" maxThreadsPerBlock: %d\n", prop.maxThreadsPerBlock);
+		printf(" maxGridSizeX: %d\n", prop.maxGridSize[0]);
+		printf(" maxGridSizeY: %d\n", prop.maxGridSize[1]);
+		printf(" maxGridSizeZ: %d\n", prop.maxGridSize[2]);
+		printf(" # of multiprocessors: %d\n", prop.multiProcessorCount);
+		printf(" maxThreadsPerMultiProcessor: %d\n", prop.maxThreadsPerMultiProcessor);
+		printf(" maxThreadsDimX: %d\n", prop.maxThreadsDim[0]);
+		printf(" maxThreadsDimY: %d\n", prop.maxThreadsDim[1]);
+		printf(" maxThreadsDimZ: %d\n", prop.maxThreadsDim[2]);
+		printf(" maxThreadsPerBlock: %d\n", prop.maxThreadsPerBlock);
+
+		std::cout << "Total Global Memory: " << prop.totalGlobalMem / (1024 * 1024) << " MB\n";
+		std::cout << "Shared Memory per Block: " << prop.sharedMemPerBlock << " bytes\n";
+		std::cout << "SM Count: " << prop.multiProcessorCount << "\n";
+		std::cout << "Registers per Block: " << prop.regsPerBlock << "\n";
+		std::cout << "Warp Size: " << prop.warpSize << "\n";
+		std::cout << "Max Threads per Block: " << prop.maxThreadsPerBlock << "\n";
+		std::cout << "Clock Rate: " << prop.clockRate / 1000 << " MHz\n";
+		// number of cores
+		int cores = 0;
+
+	}
+}
+
 int main()
 {
+	printDeviceInfo();
 	// Read cams
 	std::vector<cam> cam_vector = read_cams("data");
-
-	// Test call a CUDA function
-	wrap_test_vectorAdd();
-
+	clock_t start, end;
+	start = clock();
 	// Sweeping algorithm for camera 0
-	std::vector<cv::Mat> cost_cube = sweeping_plane(cam_vector.at(0), cam_vector, 5);
+	//std::vector<cv::Mat> cost_cube = sweeping_plane(cam_vector.at(0), cam_vector, 5);
+	std::vector<cv::Mat> cost_cube = sweeping_plane_gpu(cam_vector.at(0), cam_vector, 5);
+	end = clock();
+
+	std::cout << "Time taken for CPU version: " << (double)(end - start) / CLOCKS_PER_SEC << " seconds" << std::endl;
 
 	// Use graph cut to generate depth map 
 	// Cleaner results, long compute time
-	cv::Mat depth = depth_estimation_by_graph_cut_sWeight(cost_cube);
+	//cv::Mat depth = depth_estimation_by_graph_cut_sWeight(cost_cube);
 
 	// Find min cost and generate depth map
 	// Faster result, low quality
-	//cv::Mat depth = find_min(cost_cube);
+	cv::Mat depth = find_min(cost_cube);
 
 
 	cv::namedWindow("Depth", cv::WINDOW_NORMAL);
-	cv::imshow("Depth", depth);
+	/*cv::imshow("Depth", depth);
 	cv::waitKey(0);
 
-	cv::imwrite("./depth_map.png", depth);
+	cv::imwrite("./depth_map.png", depth);*/
 
 	//printf("%f", depth.at<uchar>(0, 0));
 
 	return 0;
+}
+
+
+
+
+std::vector<cv::Mat> sweeping_plane_gpu(const cam& ref, const std::vector<cam>& cam_vector, int window)
+{
+	int W = ref.width;
+	int H = ref.height;
+	size_t img_size = W * H;
+
+	std::vector<cv::Mat> cost_cube(ZPlanes);
+	std::vector<float> h_cost_vol(ZPlanes * W * H, 255.f);
+
+	// Extract image and camera parameters
+	const uint8_t* ref_Y = ref.YUV[0].data;
+
+	CamParams ref_params;
+	std::copy(ref.p.K.begin(), ref.p.K.end(), ref_params.K);
+	std::copy(ref.p.R.begin(), ref.p.R.end(), ref_params.R);
+	std::copy(ref.p.t.begin(), ref.p.t.end(), ref_params.t);
+	std::copy(ref.p.K_inv.begin(), ref.p.K_inv.end(), ref_params.K_inv);
+	std::copy(ref.p.R_inv.begin(), ref.p.R_inv.end(), ref_params.R_inv);
+	std::copy(ref.p.t_inv.begin(), ref.p.t_inv.end(), ref_params.t_inv);
+
+	// Convert cam_vector to image pointers + CamParams
+	std::vector<const uint8_t*> cam_Ys;
+	std::vector<CamParams> cam_params;
+
+	for (const auto& cam : cam_vector) {
+		if (cam.name == ref.name) continue;
+
+		cam_Ys.push_back(cam.YUV[0].data);
+
+		CamParams p;
+		std::copy(cam.p.K.begin(), cam.p.K.end(), p.K);
+		std::copy(cam.p.R.begin(), cam.p.R.end(), p.R);
+		std::copy(cam.p.t.begin(), cam.p.t.end(), p.t);
+		std::copy(cam.p.K_inv.begin(), cam.p.K_inv.end(), p.K_inv);
+		std::copy(cam.p.R_inv.begin(), cam.p.R_inv.end(), p.R_inv);
+		std::copy(cam.p.t_inv.begin(), cam.p.t_inv.end(), p.t_inv);
+		cam_params.push_back(p);
+	}
+
+	sweeping_plane_gpu_device(
+		ref_Y, ref_params,
+		cam_Ys, cam_params,
+		h_cost_vol.data(),
+		W, H, window
+	);
+
+	// Convert cost volume to cv::Mat
+	for (int z = 0; z < ZPlanes; ++z) {
+		cost_cube[z] = cv::Mat(H, W, CV_32FC1);
+		std::memcpy(cost_cube[z].data, h_cost_vol.data() + z * W * H, W * H * sizeof(float));
+	}
+
+	return cost_cube;
 }
