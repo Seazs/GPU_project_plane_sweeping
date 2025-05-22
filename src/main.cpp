@@ -334,7 +334,7 @@ int main()
 	clock_t start, end;
 
 	// benchmark GPU version
-	//average_time_sweeping_plane_gpu(cam_vector.at(0), cam_vector, 5, 10);
+	average_time_sweeping_plane_gpu(cam_vector.at(0), cam_vector, 5, 10);
 
 	start = clock();
 	// Sweeping algorithm for camera 0
@@ -360,11 +360,11 @@ int main()
 
 	// Use graph cut to generate depth map 
 	// Cleaner results, long compute time
-	cv::Mat depth = depth_estimation_by_graph_cut_sWeight(cost_cube);
+	//cv::Mat depth = depth_estimation_by_graph_cut_sWeight(cost_cube);
 
-	// // Find min cost and generate depth map
-	// // Faster result, low quality
-	// //cv::Mat depth = find_min(cost_cube);
+	// Find min cost and generate depth map
+	// Faster result, low quality
+	cv::Mat depth = find_min(cost_cube);
 
 
 	cv::namedWindow("Depth", cv::WINDOW_NORMAL);
@@ -420,7 +420,7 @@ std::vector<cv::Mat> sweeping_plane_gpu(const cam& ref, const std::vector<cam>& 
 		cam_params.push_back(p);
 	}
 
-	sweeping_plane_gpu_device(
+	sweeping_plane_gpu_device_Shared(
 		ref_Y, ref_params,
 		cam_Ys, cam_params,
 		h_cost_vol.data(),

@@ -71,7 +71,7 @@ bool compare_cost_cubes(const std::vector<cv::Mat>& cube1, const std::vector<cv:
                 float v1 = cube1[z].at<float>(y, x);
                 float v2 = cube2[z].at<float>(y, x);
                 float diff = std::fabs(v1 - v2);
-                if (diff > tol && z > 20) { // Skip first plane
+                if (diff > tol) {
                     if (diff_count < 100) // Print only first 10 differences
                         std::cout << "Diff at plane " << z << ", (" << y << "," << x << "): " << v1 << " vs " << v2 << " (diff=" << diff << ")\n";
                     diff_count++;
