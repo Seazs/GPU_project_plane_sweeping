@@ -19,6 +19,9 @@
 
 
 #define SHRT_MAX 32767
+#define DEVICE 1
+#define FAST 1 // 0 = graph cut, 1 = min cost
+#define BENCHMARKING 1 // 0 = no benchmarking, 1 = benchmarking
 
 std::vector<cv::Mat> sweeping_plane_gpu(const cam& ref, const std::vector<cam>& cam_vector, int window = 5);
 void average_time_sweeping_plane_gpu(const cam& ref, const std::vector<cam>& cam_vector, int window, int iterations);
@@ -333,17 +336,23 @@ int main()
 	std::vector<cam> cam_vector = read_cams("data");
 	clock_t start, end;
 
+#if BENCHMARKING == 1
 	// benchmark GPU version
 	average_time_sweeping_plane_gpu(cam_vector.at(0), cam_vector, 5, 10);
+#endif
 
 	start = clock();
 	// Sweeping algorithm for camera 0
-	//std::vector<cv::Mat> cpu_cost_cube = sweeping_plane(cam_vector.at(0), cam_vector, 5);
+	#if DEVICE == 0
+	std::vector<cv::Mat> cpu_cost_cube = sweeping_plane(cam_vector.at(0), cam_vector, 5);
+	#else
 	std::vector<cv::Mat> cost_cube = sweeping_plane_gpu(cam_vector.at(0), cam_vector, 5);
+	auto cpu_cost_cube = load_cost_cube("./data/cost_cube_CPU.bin");
+	#endif
 	end = clock();
 	std::cout << "Time taken for GPU version: " << (double)(end - start) / CLOCKS_PER_SEC << " seconds" << std::endl;
 
-	auto cpu_cost_cube = load_cost_cube("./data/cost_cube_CPU.bin");
+	
 	
 	// Compare cost cubes
 	if (compare_cost_cubes(cpu_cost_cube, cost_cube))
@@ -360,12 +369,15 @@ int main()
 
 	// Use graph cut to generate depth map 
 	// Cleaner results, long compute time
-	//cv::Mat depth = depth_estimation_by_graph_cut_sWeight(cost_cube);
-
+	#if (FAST == 0)
+	std::cout << "Graph cut" << std::endl;
+	cv::Mat depth = depth_estimation_by_graph_cut_sWeight(cost_cube);
+	#else
+	std::cout << "Min cost" << std::endl;
 	// Find min cost and generate depth map
 	// Faster result, low quality
 	cv::Mat depth = find_min(cost_cube);
-
+	#endif
 
 	cv::namedWindow("Depth", cv::WINDOW_NORMAL);
 	cv::imshow("Depth", depth);
@@ -420,7 +432,7 @@ std::vector<cv::Mat> sweeping_plane_gpu(const cam& ref, const std::vector<cam>& 
 		cam_params.push_back(p);
 	}
 
-	sweeping_plane_gpu_device_Shared(
+	sweeping_plane_gpu_device_Shared_REF(
 		ref_Y, ref_params,
 		cam_Ys, cam_params,
 		h_cost_vol.data(),

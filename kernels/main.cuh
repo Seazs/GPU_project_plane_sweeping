@@ -22,6 +22,20 @@ __global__ void sweep_kernel_float_shared(
     float* cost_vol, const uint8_t* ref_img, const uint8_t* tgt_img,
     int W, int H, int window);
 
+__global__ void sweep_kernel_float_shared_REF(
+    float* cost_vol,
+    const uint8_t* ref_img,
+    const uint8_t* tgt_img,
+    int W, int H,
+    int window);
+
+__global__ void sweep_kernel_float_shared_REF_TGT(
+    float* cost_vol,
+    const uint8_t* ref_img,
+    const uint8_t* tgt_img,
+    int W, int H,
+    int window);
+
 __global__ void sweep_kernel_float_texture(
     float* cost_vol, const uint8_t* ref_img, cudaTextureObject_t tgt_img,
     int W, int H, int window);
@@ -34,7 +48,23 @@ void sweeping_plane_gpu_device_Naive(
     int W, int H, int window
 );
 
-void sweeping_plane_gpu_device_Shared(
+void sweeping_plane_gpu_device_Shared_REF(
+    const uint8_t* ref_Y, const CamParams& ref_params,
+    const std::vector<const uint8_t*>& cam_Ys,
+    const std::vector<CamParams>& cam_params,
+    float* h_cost_vol,
+    int W, int H, int window
+);
+void sweeping_plane_gpu_device_Shared_REF_Optimized(
+    const uint8_t* ref_Y, const CamParams& ref_params,
+    const std::vector<const uint8_t*>& cam_Ys,
+    const std::vector<CamParams>& cam_params,
+    float* h_cost_vol,
+    int W, int H, int window
+);
+
+
+void sweeping_plane_gpu_device_Shared_REF_TGT(
     const uint8_t* ref_Y, const CamParams& ref_params,
     const std::vector<const uint8_t*>& cam_Ys,
     const std::vector<CamParams>& cam_params,
