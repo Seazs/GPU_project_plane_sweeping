@@ -19,9 +19,9 @@
 
 
 #define SHRT_MAX 32767
-#define DEVICE 1
-#define FAST 1 // 0 = graph cut, 1 = min cost
-#define BENCHMARKING 1 // 0 = no benchmarking, 1 = benchmarking
+#define DEVICE 1 // 0 = CPU, 1 = GPU
+#define FAST 0 // 0 = graph cut, 1 = min cost
+#define BENCHMARKING 0 // 0 = no benchmarking, 1 = benchmarking
 
 std::vector<cv::Mat> sweeping_plane_gpu(const cam& ref, const std::vector<cam>& cam_vector, int window = 5);
 void average_time_sweeping_plane_gpu(const cam& ref, const std::vector<cam>& cam_vector, int window, int iterations);
@@ -344,18 +344,18 @@ int main()
 	start = clock();
 	// Sweeping algorithm for camera 0
 	#if DEVICE == 0
-	std::vector<cv::Mat> cpu_cost_cube = sweeping_plane(cam_vector.at(0), cam_vector, 5);
+	std::vector<cv::Mat> cost_cube = sweeping_plane(cam_vector.at(0), cam_vector, 5);
 	#else
 	std::vector<cv::Mat> cost_cube = sweeping_plane_gpu(cam_vector.at(0), cam_vector, 5);
-	auto cpu_cost_cube = load_cost_cube("./data/cost_cube_CPU.bin");
+	
 	#endif
+
 	end = clock();
 	std::cout << "Time taken for GPU version: " << (double)(end - start) / CLOCKS_PER_SEC << " seconds" << std::endl;
 
-	
-	
-	// Compare cost cubes
-	if (compare_cost_cubes(cpu_cost_cube, cost_cube))
+	// Compare cost cubes with reference (saved CPU version)
+	auto ref_cost_cube = load_cost_cube("./data/cost_cube_CPU.bin");
+	if (compare_cost_cubes(ref_cost_cube, cost_cube))
 	{
 		std::cout << "Cost cubes are equal" << std::endl;
 	}
@@ -363,6 +363,7 @@ int main()
 	{
 		std::cout << "Cost cubes are NOT equal" << std::endl;
 	}
+	
 	
 
 	
@@ -393,16 +394,20 @@ int main()
 
 
 
+// GPU implementation of the sweeping plane algorithm.
+// Computes the cost volume for the reference camera using all other cameras.
+// Uses a CUDA kernel (sweeping_plane_gpu_device_Shared_REF_TGT) for acceleration.
 std::vector<cv::Mat> sweeping_plane_gpu(const cam& ref, const std::vector<cam>& cam_vector, int window)
 {
 	int W = ref.width;
 	int H = ref.height;
 	size_t img_size = W * H;
 
+	// Output cost volume: ZPlanes slices, each is WxH
 	std::vector<cv::Mat> cost_cube(ZPlanes);
-	std::vector<float> h_cost_vol(ZPlanes * W * H, 255.f);
+	std::vector<float> h_cost_vol(ZPlanes * W * H, 255.f); // Host-side cost volume, initialized to max
 
-	// Extract image and camera parameters
+	// Extract reference image (Y channel) and camera parameters
 	const uint8_t* ref_Y = ref.YUV[0].data;
 
 	CamParams ref_params;
@@ -413,12 +418,12 @@ std::vector<cv::Mat> sweeping_plane_gpu(const cam& ref, const std::vector<cam>& 
 	std::copy(ref.p.R_inv.begin(), ref.p.R_inv.end(), ref_params.R_inv);
 	std::copy(ref.p.t_inv.begin(), ref.p.t_inv.end(), ref_params.t_inv);
 
-	// Convert cam_vector to image pointers + CamParams
+	// Prepare target camera image pointers and parameters (excluding reference camera)
 	std::vector<const uint8_t*> cam_Ys;
 	std::vector<CamParams> cam_params;
 
 	for (const auto& cam : cam_vector) {
-		if (cam.name == ref.name) continue;
+		if (cam.name == ref.name) continue; // Skip reference camera
 
 		cam_Ys.push_back(cam.YUV[0].data);
 
@@ -432,14 +437,15 @@ std::vector<cv::Mat> sweeping_plane_gpu(const cam& ref, const std::vector<cam>& 
 		cam_params.push_back(p);
 	}
 
-	sweeping_plane_gpu_device_Shared_REF(
+	// Launch CUDA kernel to fill h_cost_vol with the cost volume
+	sweeping_plane_gpu_device_Shared_REF_TGT(
 		ref_Y, ref_params,
 		cam_Ys, cam_params,
 		h_cost_vol.data(),
 		W, H, window
 	);
 
-	// Convert cost volume to cv::Mat
+	// Convert the flat cost volume to a vector of cv::Mat slices
 	for (int z = 0; z < ZPlanes; ++z) {
 		cost_cube[z] = cv::Mat(H, W, CV_32FC1, 255.f);
 		std::memcpy(cost_cube[z].data, h_cost_vol.data() + z * W * H, W * H * sizeof(float));
@@ -449,6 +455,7 @@ std::vector<cv::Mat> sweeping_plane_gpu(const cam& ref, const std::vector<cam>& 
 }
 
 
+// Function to average the time taken by the GPU version of the sweeping plane algorithm
 void average_time_sweeping_plane_gpu(const cam& ref, const std::vector<cam>& cam_vector, int window, int iterations = 10)
 {
 	double total_time = 0.0;

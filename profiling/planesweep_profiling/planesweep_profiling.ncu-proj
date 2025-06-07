@@ -12,6 +12,43 @@
         {
             "is_open": true,
             "path": "../profile_results(float, shared, (32, 16, 1).ncu-rep"
+        },
+        {
+            "is_open": true,
+            "path": "../profile_results(double, (16, 16, 1).ncu-rep"
+        },
+        {
+            "path": "profile_resultsnaive(8,8,4)float.ncu-rep"
+        },
+        {
+            "is_open": true,
+            "path": "../profile_results(float, (8, 8, 4).ncu-rep"
+        },
+        {
+            "is_open": true,
+            "path": "../profile_results(float, (32, 16, 1).ncu-rep"
+        },
+        {
+            "is_open": true,
+            "path": "../profile_results(float, (16, 16, 1)DEB.ncu-rep"
+        },
+        {
+            "is_open": true,
+            "path": "../profile_results(sharedREFfloat, (16, 16, 1).ncu-rep"
+        },
+        {
+            "path": "../profile_results(sharedREF_TGTfloat, (16, 16, 1).ncu-rep"
+        },
+        {
+            "path": "../profile_results(sharedREF_TGTfloat, (16, 16, 1)Working_achten.ncu-rep"
+        },
+        {
+            "is_open": true,
+            "path": "../profile_results(sharedREF_TGTfloat, (16, 16, 1)Working.ncu-rep"
+        },
+        {
+            "is_open": true,
+            "path": "../profile_results(sharedREF_TGTfloat, (16, 16, 1)Working2.ncu-rep"
         }
     ],
     "launcher": {
@@ -53,7 +90,7 @@
         "activity/profile/launchskipcount": 0,
         "activity/profile/nvtxincludeexcludeoptions": "",
         "activity/profile/nvtxpushpopscope": "Thread",
-        "activity/profile/outputfile": "C:/Users/alexandre/Visual_Studio_project/planeSweep503/profiling/profile_results(float, shared, (32, 16, 1).ncu-rep",
+        "activity/profile/outputfile": "C:/Users/alexandre/Visual_Studio_project/planeSweep503/profiling/profile_results(sharedREF_TGTfloat, (16, 16, 1)Working2.ncu-rep",
         "activity/profile/pmsamplingbuffersize": 0,
         "activity/profile/pmsamplinginterval": 0,
         "activity/profile/pmsamplingmaxpasses": 0,
@@ -82,7 +119,8 @@
         "platform/win32/environment": "",
         "platform/win32/executable": "C:/Users/alexandre/Visual_Studio_project/planeSweep503/build/bin/Release/PlaneSweep.exe",
         "platform/win32/executable/history": [
-            "C:/Users/alexandre/Visual_Studio_project/planeSweep503/build/bin/Release/PlaneSweep.exe"
+            "C:/Users/alexandre/Visual_Studio_project/planeSweep503/build/bin/Release/PlaneSweep.exe",
+            "C:/Users/alexandre/Visual_Studio_project/planeSweep503/build/bin/RelWithDebInfo/PlaneSweep.exe"
         ],
         "platform/win32/workingdir": "C:/Users/alexandre/Visual_Studio_project/planeSweep503/build",
         "platform/win32/workingdir/history": [

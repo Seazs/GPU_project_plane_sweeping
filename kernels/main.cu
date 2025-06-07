@@ -5,6 +5,7 @@
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 #include <device_launch_parameters.h>
+#include <cmath>
 
 
 #define ZPlanes 256
@@ -159,54 +160,6 @@ __global__ void sweep_kernel_float_Naive(
 
 
 
-
-
-// Load reference image tile into shared memory
-__device__ void load_shared_ref(
-    uint8_t* shared_ref, const uint8_t* ref_img,
-    int x, int y, int tx, int ty, int lx, int ly,
-    int W, int H, int pad, int shared_w, int shared_h)
-{
-    // Center pixel
-    shared_ref[INDEX_2D(ly, lx, shared_w)] = ref_img[INDEX_2D(y, x, W)];
-
-    // Left & right borders
-    if (tx < pad) {
-        int x_left = x - pad;
-        int x_right = x + blockDim.x;
-        shared_ref[INDEX_2D(ly, tx, shared_w)] =
-            (x_left >= 0) ? ref_img[INDEX_2D(y, x_left, W)] : 0;
-        shared_ref[INDEX_2D(ly, tx + blockDim.x + pad, shared_w)] =
-            (x_right < W) ? ref_img[INDEX_2D(y, x_right, W)] : 0;
-    }
-
-    // Top & bottom borders
-    if (ty < pad) {
-        int y_top = y - pad;
-        int y_bot = y + blockDim.y;
-        shared_ref[INDEX_2D(ty, lx, shared_w)] =
-            (y_top >= 0) ? ref_img[INDEX_2D(y_top, x, W)] : 0;
-        shared_ref[INDEX_2D(ty + blockDim.y + pad, lx, shared_w)] =
-            (y_bot < H) ? ref_img[INDEX_2D(y_bot, x, W)] : 0;
-    }
-
-    // Corners
-    if (tx < pad && ty < pad) {
-        int x_left = x - pad;
-        int x_right = x + blockDim.x;
-        int y_top = y - pad;
-        int y_bot = y + blockDim.y;
-        shared_ref[INDEX_2D(ty, tx, shared_w)] =
-            (x_left >= 0 && y_top >= 0) ? ref_img[INDEX_2D(y_top, x_left, W)] : 0;
-        shared_ref[INDEX_2D(ty, tx + blockDim.x + pad, shared_w)] =
-            (x_right < W && y_top >= 0) ? ref_img[INDEX_2D(y_top, x_right, W)] : 0;
-        shared_ref[INDEX_2D(ty + blockDim.y + pad, tx, shared_w)] =
-            (x_left >= 0 && y_bot < H) ? ref_img[INDEX_2D(y_bot, x_left, W)] : 0;
-        shared_ref[INDEX_2D(ty + blockDim.y + pad, tx + blockDim.x + pad, shared_w)] =
-            (x_right < W && y_bot < H) ? ref_img[INDEX_2D(y_bot, x_right, W)] : 0;
-    }
-}
-
 // Compute projection from (x, y, z) to (x_proj, y_proj)
 __device__ void compute_projection(
     int x, int y, int z, int W, int H,
@@ -226,80 +179,10 @@ __device__ void compute_projection(
     y_proj = (cam.K[3] * Xp / Zp + cam.K[4] * Yp / Zp + cam.K[5]);
 }
 
-// Compute SAD cost
-__device__ float compute_cost(
-    const uint8_t* shared_ref, const uint8_t* tgt_img,
-    int lx, int ly, int x_p, int y_p,
-    int pad, int shared_w, int W, int H)
-{
-    float cost = 0.0f;
-    float count = 0.0f;
-    for (int dy = -pad; dy <= pad; dy++) {
-        for (int dx = -pad; dx <= pad; dx++) {
-            int rx = lx + dx;
-            int ry = ly + dy;
-            int px = x_p + dx;
-            int py = y_p + dy;
-            if (px >= 0 && px < W && py >= 0 && py < H) {
-                float ref_val = (float)shared_ref[INDEX_2D(ry, rx, shared_w)];
-                float tgt_val = (float)tgt_img[INDEX_2D(py, px, W)];
-                cost += fabsf(ref_val - tgt_val);
-                count += 1.0f;
-            }
-        }
-    }
-    return (count > 0.0f) ? cost / count : 255.0f;
-}
-
-// Sweep kernel using shared memory for reference image only
-__global__ void sweep_kernel_float_shared(
-    float* cost_vol,
-    const uint8_t* ref_img,
-    const uint8_t* tgt_img,
-    int W, int H,
-    int window)
-{
-    extern __shared__ uint8_t shared_ref[];
-
-    const int pad = window / 2;
-    const int shared_w = blockDim.x + 2 * pad;
-    const int shared_h = blockDim.y + 2 * pad;
-
-    const int tx = threadIdx.x;
-    const int ty = threadIdx.y;
-
-    const int x = blockIdx.x * blockDim.x + tx;
-    const int y = blockIdx.y * blockDim.y + ty;
-    const int z = blockIdx.z;
-
-    if (x >= W || y >= H || z >= ZPlanes) return;
-
-    const int lx = tx + pad;
-    const int ly = ty + pad;
-
-    // Load shared memory
-    load_shared_ref(shared_ref, ref_img, x, y, tx, ty, lx, ly, W, H, pad, shared_w, shared_h);
-
-    __syncthreads();
-
-    // Projection
-    float x_proj, y_proj;
-    compute_projection(x, y, z, W, H, x_proj, y_proj);
-
-    if (x_proj < 0 || x_proj >= W || y_proj < 0 || y_proj >= H) return;
-
-    int x_p = (int)roundf(x_proj);
-    int y_p = (int)roundf(y_proj);
-
-    // Cost computation
-    float cost = compute_cost(shared_ref, tgt_img, lx, ly, x_p, y_p, pad, shared_w, W, H);
-
-    int idx = INDEX_3D(z, y, x, H, W);
-    cost_vol[idx] = fminf(cost_vol[idx], cost);
-}
 
 
-// Optimized shared memory kernel with improved memory access patterns
+
+// shared memory kernel for reference image only
 __global__ void sweep_kernel_float_shared_REF(
     float* cost_vol,
     const uint8_t* ref_img,
@@ -346,53 +229,50 @@ __global__ void sweep_kernel_float_shared_REF(
 
     __syncthreads();
 
-    // Compute projection using the existing function (unchanged as requested)
+    // Compute projection for this pixel and depth
     float proj_x, proj_y;
     compute_projection(gid_x, gid_y, depth_idx, W, H, proj_x, proj_y);
 
-    // Bounds checking - match CPU behavior exactly
+    
     if (proj_x < 0.0f || proj_x >= W || proj_y < 0.0f || proj_y >= H) {
         return;  // Skip this pixel entirely like CPU version
     }
 
-    const int center_x = __float2int_rn(proj_x);  // Using intrinsic for rounding
+    const int center_x = __float2int_rn(proj_x);  
     const int center_y = __float2int_rn(proj_y);
 
-    // Cost computation - match CPU logic exactly
+    // Optimized cost computation with loop unrolling hints
     float total_cost = 0.0f;
-    float valid_pixels = 0.0f;  // Use float to match CPU behavior
+    int valid_pixels = 0;
     
-    // Match CPU nested loop order exactly
+    // Process window in a more cache-friendly pattern
+    #pragma unroll 4
     for (int dy = -radius; dy <= radius; dy++) {
-        for (int dx = -radius; dx <= radius; dx++) {
-            // Reference pixel coordinates (using shared memory)
-            int ref_x_local = local_x + dx;
-            int ref_y_local = local_y + dy;
-            
-            // Target pixel coordinates (global)
-            int tgt_x_global = center_x + dx;
-            int tgt_y_global = center_y + dy;
-            
-            // Bounds checking - match CPU continue logic
-            if (tgt_x_global < 0 || tgt_x_global >= W || 
-                tgt_y_global < 0 || tgt_y_global >= H) {
-                continue;
+        const int ref_row = local_y + dy;
+        const int tgt_row = center_y + dy;
+        
+        if (tgt_row >= 0 && tgt_row < H) {
+            #pragma unroll 4
+            for (int dx = -radius; dx <= radius; dx++) {
+                const int ref_col = local_x + dx;
+                const int tgt_col = center_x + dx;
+                
+                if (tgt_col >= 0 && tgt_col < W) {
+                    const int ref_idx = ref_row * tile_width + ref_col;
+                    const int tgt_idx = tgt_row * W + tgt_col;
+                    
+                    const float ref_val = __uint2float_rn(shared_mem[ref_idx]);
+                    const float tgt_val = __uint2float_rn(tgt_img[tgt_idx]);
+                    
+                    total_cost += fabsf(ref_val - tgt_val);
+                    valid_pixels++;
+                }
             }
-            
-            const int ref_idx = ref_y_local * tile_width + ref_x_local;
-            const int tgt_idx = tgt_y_global * W + tgt_x_global;
-            
-            // Use regular float conversion instead of intrinsics for consistency
-            const float ref_val = (float)shared_mem[ref_idx];
-            const float tgt_val = (float)tgt_img[tgt_idx];
-            
-            total_cost += fabsf(ref_val - tgt_val);
-            valid_pixels += 1.0f;
         }
     }
 
-    // Match CPU division behavior exactly
-    float final_cost = (valid_pixels > 0.0f) ? (total_cost / valid_pixels) : 255.0f;
+    // Compute final cost with improved numerical stability
+    float final_cost = (valid_pixels > 0) ? __fdividef(total_cost, valid_pixels) : 255.0f;
 
     // Update cost volume with atomic min for safety (optional: can be removed if single-camera)
     const int output_idx = INDEX_3D(depth_idx, gid_y, gid_x, H, W);
@@ -401,7 +281,7 @@ __global__ void sweep_kernel_float_shared_REF(
 
 
 
-
+// shared memory kernel for reference and target images
 __global__ void sweep_kernel_float_shared_REF_TGT(
     float* cost_vol,
     const uint8_t* ref_img,
@@ -409,138 +289,84 @@ __global__ void sweep_kernel_float_shared_REF_TGT(
     int W, int H,
     int window)
 {
-    extern __shared__ uint8_t shared_mem[];
-    
-    const int tid_x = threadIdx.x;
-    const int tid_y = threadIdx.y;
-    const int gid_x = blockIdx.x * blockDim.x + tid_x;
-    const int gid_y = blockIdx.y * blockDim.y + tid_y;
-    const int depth_idx = blockIdx.z;
-
-    // Early bounds check
-    if (gid_x >= W || gid_y >= H || depth_idx >= ZPlanes) return;
-
     const int radius = window >> 1;
-    const int tile_width = blockDim.x + (radius << 1);
-    const int tile_height = blockDim.y + (radius << 1);
-    
-    // For target image, we use a larger tile to account for projection spread
-    // This is a heuristic - you might need to adjust based on your camera setup
-    const int tgt_expand = max(radius * 2, 32); // Expand target tile more than reference
-    const int tgt_tile_width = blockDim.x + (tgt_expand << 1);
-    const int tgt_tile_height = blockDim.y + (tgt_expand << 1);
-    
-    // Memory layout: [reference_tile][target_tile]
-    uint8_t* ref_shared = shared_mem;
-    uint8_t* tgt_shared = shared_mem + tile_width * tile_height;
-    
+    const int shared_width = blockDim.x + 2 * radius;
+    const int shared_height = blockDim.y + 2 * radius;
+    const int shared_size = shared_width * shared_height;
+
+    extern __shared__ uint8_t shared_mem[];
+    uint8_t* shared_ref = shared_mem;
+    uint8_t* shared_tgt = shared_mem + shared_size;
+
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    const int thread_id = ty * blockDim.x + tx;
     const int total_threads = blockDim.x * blockDim.y;
-    const int thread_id = tid_y * blockDim.x + tid_x;
-    
-    // Load reference image tile (same as before)
-    const int ref_elements = tile_width * tile_height;
-    for (int elem_id = thread_id; elem_id < ref_elements; elem_id += total_threads) {
-        int tile_y = elem_id / tile_width;
-        int tile_x = elem_id % tile_width;
-        
-        int src_x = blockIdx.x * blockDim.x + tile_x - radius;
-        int src_y = blockIdx.y * blockDim.y + tile_y - radius;
-        
-        src_x = max(0, min(src_x, W - 1));
-        src_y = max(0, min(src_y, H - 1));
-        
-        ref_shared[elem_id] = ref_img[src_y * W + src_x];
-    }
-    
-    // Load target image tile (larger area to account for projections)
-    const int tgt_elements = tgt_tile_width * tgt_tile_height;
-    for (int elem_id = thread_id; elem_id < tgt_elements; elem_id += total_threads) {
-        int tile_y = elem_id / tgt_tile_width;
-        int tile_x = elem_id % tgt_tile_width;
-        
-        int src_x = blockIdx.x * blockDim.x + tile_x - tgt_expand;
-        int src_y = blockIdx.y * blockDim.y + tile_y - tgt_expand;
-        
-        src_x = max(0, min(src_x, W - 1));
-        src_y = max(0, min(src_y, H - 1));
-        
-        tgt_shared[elem_id] = tgt_img[src_y * W + src_x];
+
+    const int x = blockIdx.x * blockDim.x + tx;
+    const int y = blockIdx.y * blockDim.y + ty;
+    const int zi = blockIdx.z;
+
+    if (x >= W || y >= H || zi >= ZPlanes) return;
+
+    // Compute projection for this pixel and depth
+    float proj_x, proj_y;
+    compute_projection(x, y, zi, W, H, proj_x, proj_y);
+
+    // Clamp projected coordinates for safety
+    int px = (proj_x < 0 || proj_x >= W) ? 0 : __float2int_rn(proj_x);
+    int py = (proj_y < 0 || proj_y >= H) ? 0 : __float2int_rn(proj_y);
+
+    // Collaborative loading of shared_ref and shared_tgt
+    const int total_elements = shared_size;
+    for (int idx = thread_id; idx < total_elements; idx += total_threads) {
+        int local_y = idx / shared_width;
+        int local_x = idx % shared_width;
+
+        int global_rx = blockIdx.x * blockDim.x + local_x - radius;
+        int global_ry = blockIdx.y * blockDim.y + local_y - radius;
+
+        int global_tx = px + (local_x - (tx + radius));
+        int global_ty = py + (local_y - (ty + radius));
+
+        // Clamp to image boundaries
+        global_rx = max(0, min(global_rx, W - 1));
+        global_ry = max(0, min(global_ry, H - 1));
+        global_tx = max(0, min(global_tx, W - 1));
+        global_ty = max(0, min(global_ty, H - 1));
+
+        shared_ref[local_y * shared_width + local_x] = ref_img[global_ry * W + global_rx];
+        shared_tgt[local_y * shared_width + local_x] = tgt_img[global_ty * W + global_tx];
     }
 
     __syncthreads();
 
-    // Compute projection
-    float proj_x, proj_y;
-    compute_projection(gid_x, gid_y, depth_idx, W, H, proj_x, proj_y);
+    // Compute SAD cost
+    const int lx = tx + radius;
+    const int ly = ty + radius;
 
-    if (proj_x < 0.0f || proj_x >= W || proj_y < 0.0f || proj_y >= H) {
-        return;
-    }
+    float cost = 0.0f;
+    float count = 0.0f;
 
-    const int center_x = __float2int_rn(proj_x);
-    const int center_y = __float2int_rn(proj_y);
-    
-    // Calculate base coordinates for target tile access
-    const int tgt_base_x = blockIdx.x * blockDim.x - tgt_expand;
-    const int tgt_base_y = blockIdx.y * blockDim.y - tgt_expand;
+    for (int dy = -radius; dy <= radius; ++dy) {
+        for (int dx = -radius; dx <= radius; ++dx) {
+            int ref_idx = (ly + dy) * shared_width + (lx + dx);
+            int tgt_idx = ref_idx;  // same coords in shared memory
 
-    // Cost computation using both shared memory tiles
-    float total_cost = 0.0f;
-    float valid_pixels = 0.0f;
-    
-    const int local_x = tid_x + radius;
-    const int local_y = tid_y + radius;
-    
-    for (int dy = -radius; dy <= radius; dy++) {
-        for (int dx = -radius; dx <= radius; dx++) {
-            // Reference pixel (from shared memory)
-            int ref_x_local = local_x + dx;
-            int ref_y_local = local_y + dy;
-            
-            // Target pixel coordinates
-            int tgt_x_global = center_x + dx;
-            int tgt_y_global = center_y + dy;
-            
-            // Bounds checking for global coordinates
-            if (tgt_x_global < 0 || tgt_x_global >= W || 
-                tgt_y_global < 0 || tgt_y_global >= H) {
-                continue;
-            }
-            
-            // Convert global target coordinates to local tile coordinates
-            int tgt_x_local = tgt_x_global - tgt_base_x;
-            int tgt_y_local = tgt_y_global - tgt_base_y;
-            
-            // Check if target pixel is within our cached tile
-            bool use_shared_tgt = (tgt_x_local >= 0 && tgt_x_local < tgt_tile_width &&
-                                  tgt_y_local >= 0 && tgt_y_local < tgt_tile_height);
-            
-            const int ref_idx = ref_y_local * tile_width + ref_x_local;
-            const float ref_val = (float)ref_shared[ref_idx];
-            
-            float tgt_val;
-            if (use_shared_tgt) {
-                // Use shared memory for target
-                const int tgt_idx = tgt_y_local * tgt_tile_width + tgt_x_local;
-                tgt_val = (float)tgt_shared[tgt_idx];
-            } else {
-                // Fall back to global memory for target (should be rare)
-                const int tgt_idx = tgt_y_global * W + tgt_x_global;
-                tgt_val = (float)tgt_img[tgt_idx];
-            }
-            
-            total_cost += fabsf(ref_val - tgt_val);
-            valid_pixels += 1.0f;
+            cost += fabsf((float)shared_ref[ref_idx] - (float)shared_tgt[tgt_idx]);
+            count += 1.0f;
         }
     }
 
-    float final_cost = (valid_pixels > 0.0f) ? (total_cost / valid_pixels) : 255.0f;
+    cost = (count > 0) ? cost / count : 255.0f;
 
-    const int output_idx = INDEX_3D(depth_idx, gid_y, gid_x, H, W);
-    cost_vol[output_idx] = fminf(cost_vol[output_idx], final_cost);
+    // Write to cost volume
+    int out_idx = INDEX_3D(zi, y, x, H, W);
+    cost_vol[out_idx] = fminf(cost_vol[out_idx], cost);
 }
 
 
+// Kernel for texture memory access
 __global__ void sweep_kernel_float_texture(
     float* cost_vol,             // [ZPlanes * H * W]
     const uint8_t* ref_img,      // [H * W]
@@ -626,6 +452,16 @@ __global__ void sweep_kernel_float_texture(
 }
 
 
+// ============================================================================
+// ========================== WRAPPER FUNCTIONS =========================
+// ============================================================================
+
+
+
+// Wrapper function for naive implementation (double precision and float)
+// This function launches the naive CUDA kernel for plane sweeping stereo.
+// It allocates device memory, copies input data, launches the kernel for each camera,
+// and copies the result back to host memory.
 void sweeping_plane_gpu_device_Naive(
     const uint8_t* ref_Y, const CamParams& ref_params,
     const std::vector<const uint8_t*>& cam_Ys,
@@ -637,6 +473,7 @@ void sweeping_plane_gpu_device_Naive(
 
     size_t img_size = W * H;
 
+    // Set up CUDA grid and block dimensions
     dim3 threads(16, 16, 1);
     dim3 blocks(
         (W + threads.x - 1) / threads.x,
@@ -648,38 +485,49 @@ void sweeping_plane_gpu_device_Naive(
     float* d_cost;
 
     cudaError_t cudaStatus;
-    cudaEvent_t start_gpu, stop_gpu; //cudaEvent are used to time the kernel
+    cudaEvent_t start_gpu, stop_gpu; // cudaEvent are used to time the kernel
 
     std::vector<float> execution_times(cam_Ys.size());
 
+    // Create CUDA events for timing
     CHK(cudaEventCreate(&start_gpu));
     CHK(cudaEventCreate(&stop_gpu));
 
+    // Allocate and copy reference image to device
     CHK(cudaMalloc(&d_ref, img_size));
     CHK(cudaMemcpy(d_ref, ref_Y, img_size, cudaMemcpyHostToDevice));
 
+    // Allocate and copy initial cost volume to device
     CHK(cudaMalloc(&d_cost, ZPlanes * img_size * sizeof(float)));
     CHK(cudaMemcpy(d_cost, h_cost_vol, ZPlanes * img_size * sizeof(float), cudaMemcpyHostToDevice));
     
     uint8_t* d_cam;
     CHK(cudaMalloc(&d_cam, img_size));
 
+    // Copy reference camera parameters to constant memory
     cudaMemcpyToSymbol(ref, &ref_params, sizeof(CamParams));
 
-
+    // Loop over all target cameras
     for (size_t i = 0; i < cam_Ys.size(); ++i) {
 
+        // Copy target camera parameters to constant memory
         cudaMemcpyToSymbol(cam, &cam_params[i], sizeof(CamParams));
 
+        // Copy target image to device
         CHK(cudaMemcpy(d_cam, cam_Ys[i], img_size, cudaMemcpyHostToDevice));
-        clock_t kernel_start = clock();
-        std::cout << "time kernel start: " << (double)(kernel_start - function_start)/CLOCKS_PER_SEC << std::endl;
-        
+
+        // Start timing
         CHK(cudaEventRecord(start_gpu, 0));
+
+        // Launch the naive float kernel (can switch to double if needed)
+        // sweep_kernel_double_Naive<<<blocks, threads>>>(
+        //     d_cost, d_ref, d_cam, W, H, window
+        // );
         sweep_kernel_float_Naive<<<blocks, threads>>>(
             d_cost, d_ref, d_cam, W, H, window
         );
 
+        // Stop timing
         CHK(cudaEventRecord(stop_gpu, 0));
         CHK(cudaGetLastError());
         CHK(cudaDeviceSynchronize());
@@ -687,26 +535,27 @@ void sweeping_plane_gpu_device_Naive(
         float milliseconds = 0.0f;
         CHK(cudaEventElapsedTime(&milliseconds, start_gpu, stop_gpu));
         execution_times[i] = milliseconds / 1000.0f;
-
-        
     }
+
+    // Free target camera buffer
     CHK(cudaFree(d_cam));
-    // Print execution times
+
+    // Print execution times for each camera
     for (size_t i = 0; i < cam_Ys.size(); ++i) {
         std::cout << "Execution time for camera " << i << " kernel : " << execution_times[i] << " seconds" << std::endl;
     }
 
+    // Copy result cost volume back to host
     CHK(cudaMemcpy(h_cost_vol, d_cost, ZPlanes * img_size * sizeof(float), cudaMemcpyDeviceToHost));
     CHK(cudaFree(d_ref));
     CHK(cudaFree(d_cost));
     CHK(cudaEventDestroy(start_gpu));
     CHK(cudaEventDestroy(stop_gpu));
 
-    
-
     return;
 
 Error:
+    // Cleanup in case of error
     cudaFree(d_ref);
     cudaFree(d_cost);
     cudaEventDestroy(start_gpu);
@@ -725,6 +574,7 @@ Error:
 
 
 
+// Wrapper function for shared memory kernel using only reference image in shared memory
 void sweeping_plane_gpu_device_Shared_REF(
     const uint8_t* ref_Y, const CamParams& ref_params,
     const std::vector<const uint8_t*>& cam_Ys,
@@ -736,6 +586,7 @@ void sweeping_plane_gpu_device_Shared_REF(
 
     size_t img_size = W * H;
 
+    // Set up CUDA grid and block dimensions
     dim3 threads(16, 16, 1);
     dim3 blocks(
         (W + threads.x - 1) / threads.x,
@@ -747,70 +598,75 @@ void sweeping_plane_gpu_device_Shared_REF(
     float* d_cost;
 
     cudaError_t cudaStatus;
-    cudaEvent_t start_gpu, stop_gpu; //cudaEvent are used to time the kernel
+    cudaEvent_t start_gpu, stop_gpu; // CUDA events for timing
 
     std::vector<float> execution_times(cam_Ys.size());
 
-    size_t shared_mem_size = (threads.x + window - 1) * (threads.y + window - 1) * sizeof(uint8_t); //for ref and tgt
+    // Shared memory size for reference image tile
+    size_t shared_mem_size = (threads.x + window - 1) * (threads.y + window - 1) * sizeof(uint8_t);
 
     CHK(cudaEventCreate(&start_gpu));
     CHK(cudaEventCreate(&stop_gpu));
 
+    // Allocate and copy reference image to device
     CHK(cudaMalloc(&d_ref, img_size));
     CHK(cudaMemcpy(d_ref, ref_Y, img_size, cudaMemcpyHostToDevice));
 
+    // Allocate and copy initial cost volume to device
     CHK(cudaMalloc(&d_cost, ZPlanes * img_size * sizeof(float)));
     CHK(cudaMemcpy(d_cost, h_cost_vol, ZPlanes * img_size * sizeof(float), cudaMemcpyHostToDevice));
     
     uint8_t* d_cam;
     CHK(cudaMalloc(&d_cam, img_size));
 
+    // Copy reference camera parameters to constant memory
     cudaMemcpyToSymbol(ref, &ref_params, sizeof(CamParams));
 
-
+    // Loop over all target cameras
     for (size_t i = 0; i < cam_Ys.size(); ++i) {
 
-		cudaMemcpyToSymbol(cam, &cam_params[i], sizeof(CamParams));
+        // Copy target camera parameters to constant memory
+        cudaMemcpyToSymbol(cam, &cam_params[i], sizeof(CamParams));
 
+        // Copy target image to device
         CHK(cudaMemcpy(d_cam, cam_Ys[i], img_size, cudaMemcpyHostToDevice));
         clock_t kernel_start = clock();
         std::cout << "time kernel start: " << (double)(kernel_start - function_start)/CLOCKS_PER_SEC << std::endl;
         
+        // Start timing
         CHK(cudaEventRecord(start_gpu, 0));
+        // Launch the shared memory kernel (reference image only)
         sweep_kernel_float_shared_REF<<<blocks, threads, shared_mem_size>>>(
             d_cost, d_ref, d_cam, W, H, window
         );
         CHK(cudaEventRecord(stop_gpu, 0));
 
-
         CHK(cudaGetLastError());
         CHK(cudaDeviceSynchronize());
 
-
+        // Stop timing and record execution time
         CHK(cudaEventSynchronize(stop_gpu));
         float milliseconds = 0.0f;
         CHK(cudaEventElapsedTime(&milliseconds, start_gpu, stop_gpu));
         execution_times[i] = milliseconds / 1000.0f;
-
-        
     }
     CHK(cudaFree(d_cam));
-    // Print execution times
+    // Print execution times for each camera
     for (size_t i = 0; i < cam_Ys.size(); ++i) {
         std::cout << "Execution time for camera " << i << " kernel : " << execution_times[i] << " seconds" << std::endl;
     }
 
+    // Copy result cost volume back to host
     CHK(cudaMemcpy(h_cost_vol, d_cost, ZPlanes * img_size * sizeof(float), cudaMemcpyDeviceToHost));
     CHK(cudaFree(d_ref));
     CHK(cudaFree(d_cost));
     CHK(cudaEventDestroy(start_gpu));
     CHK(cudaEventDestroy(stop_gpu));
 
-    
-
     return;
 
 Error:
+    // Cleanup in case of error
     cudaFree(d_ref);
     cudaFree(d_cost);
     cudaEventDestroy(start_gpu);
@@ -831,6 +687,7 @@ Error:
 
 
 
+// Wrapper function for shared memory kernel using both reference and target images in shared memory
 void sweeping_plane_gpu_device_Shared_REF_TGT(
     const uint8_t* ref_Y, const CamParams& ref_params,
     const std::vector<const uint8_t*>& cam_Ys,
@@ -842,6 +699,7 @@ void sweeping_plane_gpu_device_Shared_REF_TGT(
 
     size_t img_size = W * H;
 
+    // Use 16x16 block for good occupancy and shared memory usage
     dim3 threads(16, 16, 1);
     dim3 blocks(
         (W + threads.x - 1) / threads.x,
@@ -849,106 +707,98 @@ void sweeping_plane_gpu_device_Shared_REF_TGT(
         (ZPlanes + threads.z - 1) / threads.z
     );
 
-    uint8_t* d_ref;
-    float* d_cost;
-
+    uint8_t* d_ref = nullptr;
+    float* d_cost = nullptr;
+    uint8_t* d_cam = nullptr;
+    cudaEvent_t start_gpu = nullptr, stop_gpu = nullptr;
     cudaError_t cudaStatus;
-    cudaEvent_t start_gpu, stop_gpu;
 
     std::vector<float> execution_times(cam_Ys.size());
 
-    // Calculate shared memory size for the optimized version
+    // Calculate shared memory size for both reference and target tiles
     const int radius = window / 2;
-    const int ref_tile_width = threads.x + 2 * radius;
-    const int ref_tile_height = threads.y + 2 * radius;
-    const int tgt_expand = max(radius * 2, 32);
-    const int tgt_tile_width = threads.x + 2 * tgt_expand;
-    const int tgt_tile_height = threads.y + 2 * tgt_expand;
-    
-    size_t shared_mem_size = (ref_tile_width * ref_tile_height + 
-                             tgt_tile_width * tgt_tile_height) * sizeof(uint8_t);
-    
-    // For two-pass version, we need additional space for projection coordinates
-    // size_t shared_mem_size_twopass = ref_tile_width * ref_tile_height * sizeof(uint8_t) +
-    //                                  threads.x * threads.y * 2 * sizeof(float) +
-    //                                  estimated_cache_size * sizeof(uint8_t);
+    const int shared_width = threads.x + 2 * radius;
+    const int shared_height = threads.y + 2 * radius;
+    const size_t shared_mem_size = 2 * shared_width * shared_height * sizeof(uint8_t);
 
+    // Create CUDA events for timing
     CHK(cudaEventCreate(&start_gpu));
     CHK(cudaEventCreate(&stop_gpu));
 
+    // Allocate and copy reference image to device
     CHK(cudaMalloc(&d_ref, img_size));
     CHK(cudaMemcpy(d_ref, ref_Y, img_size, cudaMemcpyHostToDevice));
 
+    // Allocate and copy initial cost volume to device
     CHK(cudaMalloc(&d_cost, ZPlanes * img_size * sizeof(float)));
     CHK(cudaMemcpy(d_cost, h_cost_vol, ZPlanes * img_size * sizeof(float), cudaMemcpyHostToDevice));
-    
-    uint8_t* d_cam;
+
+    // Allocate device memory for target image
     CHK(cudaMalloc(&d_cam, img_size));
 
-    cudaMemcpyToSymbol(ref, &ref_params, sizeof(CamParams));
+    // Copy reference camera parameters to constant memory
+    CHK(cudaMemcpyToSymbol(ref, &ref_params, sizeof(CamParams)));
 
+    // Loop over all target cameras
     for (size_t i = 0; i < cam_Ys.size(); ++i) {
-        cudaMemcpyToSymbol(cam, &cam_params[i], sizeof(CamParams));
-
+        // Copy target camera parameters to constant memory
+        CHK(cudaMemcpyToSymbol(cam, &cam_params[i], sizeof(CamParams)));
+        // Copy target image to device
         CHK(cudaMemcpy(d_cam, cam_Ys[i], img_size, cudaMemcpyHostToDevice));
-        clock_t kernel_start = clock();
-        std::cout << "time kernel start: " << (double)(kernel_start - function_start)/CLOCKS_PER_SEC << std::endl;
-        
+
+        // Start timing
         CHK(cudaEventRecord(start_gpu, 0));
-        
-        // Use the optimized version with both ref and target shared memory
+        // Launch the shared memory kernel (reference and target images)
         sweep_kernel_float_shared_REF_TGT<<<blocks, threads, shared_mem_size>>>(
             d_cost, d_ref, d_cam, W, H, window
         );
-        
-        // Alternative: Use two-pass version (comment out the above and uncomment below)
-        // sweep_kernel_float_shared_REF_TGT_twopass<<<blocks, threads, shared_mem_size_twopass>>>(
-        //     d_cost, d_ref, d_cam, W, H, window
-        // );
-        
         CHK(cudaEventRecord(stop_gpu, 0));
         CHK(cudaGetLastError());
-        CHK(cudaDeviceSynchronize());
         CHK(cudaEventSynchronize(stop_gpu));
-        
+
         float milliseconds = 0.0f;
         CHK(cudaEventElapsedTime(&milliseconds, start_gpu, stop_gpu));
         execution_times[i] = milliseconds / 1000.0f;
     }
-    
-    CHK(cudaFree(d_cam));
-    
-    // Print execution times
+
+    // Copy result cost volume back to host
+    CHK(cudaMemcpy(h_cost_vol, d_cost, ZPlanes * img_size * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // Print execution times for each camera
     for (size_t i = 0; i < cam_Ys.size(); ++i) {
         std::cout << "Execution time for camera " << i << " kernel : " << execution_times[i] << " seconds" << std::endl;
     }
 
-    CHK(cudaMemcpy(h_cost_vol, d_cost, ZPlanes * img_size * sizeof(float), cudaMemcpyDeviceToHost));
-    CHK(cudaFree(d_ref));
-    CHK(cudaFree(d_cost));
-    CHK(cudaEventDestroy(start_gpu));
-    CHK(cudaEventDestroy(stop_gpu));
-
+    // Cleanup
+    cudaFree(d_cam);
+    cudaFree(d_ref);
+    cudaFree(d_cost);
+    cudaEventDestroy(start_gpu);
+    cudaEventDestroy(stop_gpu);
     return;
 
 Error:
+    // Cleanup in case of error
+    cudaFree(d_cam);
     cudaFree(d_ref);
     cudaFree(d_cost);
     cudaEventDestroy(start_gpu);
     cudaEventDestroy(stop_gpu);
     std::cerr << "CUDA error occurred in sweeping_plane_gpu_device_Shared_REF_TGT." << std::endl;
-
     cudaStatus = cudaDeviceReset();
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaDeviceReset failed!");
     }
-
     return;
 }
 
 
 
 
+// Wrapper function for texture memory kernel
+// This function launches the CUDA kernel that uses texture memory for the target image.
+// It sets up the CUDA texture object, allocates/copies device memory, launches the kernel for each camera,
+// and copies the result back to host memory.
 void sweeping_plane_gpu_device_texture(
     const uint8_t* ref_Y, const CamParams& ref_params,
     const std::vector<const uint8_t*>& cam_Ys,
@@ -960,6 +810,7 @@ void sweeping_plane_gpu_device_texture(
 
     size_t img_size = W * H;
 
+    // Set up CUDA grid and block dimensions
     dim3 threads(16, 16, 1);
     dim3 blocks(
         (W + threads.x - 1) / threads.x,
@@ -971,19 +822,22 @@ void sweeping_plane_gpu_device_texture(
     float* d_cost;
 
     cudaError_t cudaStatus;
-    cudaEvent_t start_gpu, stop_gpu; //cudaEvent are used to time the kernel
+    cudaEvent_t start_gpu, stop_gpu; // CUDA events for timing
 
     std::vector<float> execution_times(cam_Ys.size());
 
+    // Allocate CUDA array for target image (for texture memory)
     cudaArray_t tgt_array;
     cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<uint8_t>();
     CHK(cudaMallocArray(&tgt_array, &channelDesc, W, H));
 
+    // Set up resource descriptor for texture object
     cudaResourceDesc resDesc;
     memset(&resDesc, 0, sizeof(resDesc));
     resDesc.resType = cudaResourceTypeArray;
     resDesc.res.array.array = tgt_array;
 
+    // Set up texture descriptor
     cudaTextureDesc texDesc;
     memset(&texDesc, 0, sizeof(texDesc));
     texDesc.addressMode[0] = cudaAddressModeClamp;
@@ -992,53 +846,57 @@ void sweeping_plane_gpu_device_texture(
     texDesc.readMode = cudaReadModeNormalizedFloat;
     texDesc.normalizedCoords = false;
 
+    // Create texture object for target image
     cudaTextureObject_t texTgt = 0;
     CHK(cudaCreateTextureObject(&texTgt, &resDesc, &texDesc, NULL));
     
-
-
+    // Create CUDA events for timing
     CHK(cudaEventCreate(&start_gpu));
     CHK(cudaEventCreate(&stop_gpu));
 
+    // Allocate and copy reference image to device
     CHK(cudaMalloc(&d_ref, img_size));
     CHK(cudaMemcpy(d_ref, ref_Y, img_size, cudaMemcpyHostToDevice));
 
+    // Allocate and copy initial cost volume to device
     CHK(cudaMalloc(&d_cost, ZPlanes * img_size * sizeof(float)));
     CHK(cudaMemcpy(d_cost, h_cost_vol, ZPlanes * img_size * sizeof(float), cudaMemcpyHostToDevice));
     
+    // Copy reference camera parameters to constant memory
     cudaMemcpyToSymbol(ref, &ref_params, sizeof(CamParams));
 
-
+    // Loop over all target cameras
     for (size_t i = 0; i < cam_Ys.size(); ++i) {
 
-		cudaMemcpyToSymbol(cam, &cam_params[i], sizeof(CamParams));
+        // Copy target camera parameters to constant memory
+        cudaMemcpyToSymbol(cam, &cam_params[i], sizeof(CamParams));
 
+        // Copy target image to CUDA array for texture access
         CHK(cudaMemcpyToArray(tgt_array, 0, 0, cam_Ys[i], img_size * sizeof(uint8_t), cudaMemcpyHostToDevice));
 
-        
+        // Start timing
         CHK(cudaEventRecord(start_gpu, 0));
+        // Launch the kernel using texture memory for the target image
         sweep_kernel_float_texture<<<blocks, threads, (threads.x + window - 1) * (threads.y + window - 1) * sizeof(uint8_t)>>>(
             d_cost, d_ref, texTgt, W, H, window
         );
         CHK(cudaEventRecord(stop_gpu, 0));
 
-
         CHK(cudaGetLastError());
         CHK(cudaDeviceSynchronize());
 
-
+        // Stop timing and record execution time
         CHK(cudaEventSynchronize(stop_gpu));
         float milliseconds = 0.0f;
         CHK(cudaEventElapsedTime(&milliseconds, start_gpu, stop_gpu));
         execution_times[i] = milliseconds / 1000.0f;
-
-        
     }
-    // Print execution times
+    // Print execution times for each camera
     for (size_t i = 0; i < cam_Ys.size(); ++i) {
         std::cout << "Execution time for camera " << i << " kernel : " << execution_times[i] << " seconds" << std::endl;
     }
 
+    // Copy result cost volume back to host
     CHK(cudaMemcpy(h_cost_vol, d_cost, ZPlanes * img_size * sizeof(float), cudaMemcpyDeviceToHost));
     
     // Cleanup
@@ -1048,11 +906,10 @@ void sweeping_plane_gpu_device_texture(
     CHK(cudaEventDestroy(start_gpu));
     CHK(cudaEventDestroy(stop_gpu));
 
-    
-
     return;
 
 Error:
+    // Cleanup in case of error
     if (texTgt) {
         cudaDestroyTextureObject(texTgt);
     }

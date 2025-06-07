@@ -55,13 +55,6 @@ void sweeping_plane_gpu_device_Shared_REF(
     float* h_cost_vol,
     int W, int H, int window
 );
-void sweeping_plane_gpu_device_Shared_REF_Optimized(
-    const uint8_t* ref_Y, const CamParams& ref_params,
-    const std::vector<const uint8_t*>& cam_Ys,
-    const std::vector<CamParams>& cam_params,
-    float* h_cost_vol,
-    int W, int H, int window
-);
 
 
 void sweeping_plane_gpu_device_Shared_REF_TGT(
